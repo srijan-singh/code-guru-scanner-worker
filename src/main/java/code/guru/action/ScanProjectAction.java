@@ -17,54 +17,70 @@ package code.guru.action;
 import code.guru.structure.ProjectStructure;
 import com.intellij.notification.Notification;
 import com.intellij.notification.NotificationGroup;
+import com.intellij.notification.NotificationGroupManager;
 import com.intellij.notification.NotificationType;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.progress.ProgressIndicator;
+import com.intellij.openapi.progress.ProgressManager;
+import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.psi.PsiJavaFile;
 import com.intellij.psi.PsiClass;
 import com.intellij.psi.PsiMethod;
+import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
 
 public class ScanProjectAction extends AnAction {
 
+    private static final String SCANNER_WORKER = "Scanner Worker";
+
     private static final Logger log = Logger.getInstance(ScanProjectAction.class);
 
     // Create a notification group for our plugin
     private static final NotificationGroup NOTIFICATION_GROUP =
-            NotificationGroup.balloonGroup("Scanner Worker");
+            NotificationGroupManager.getInstance().getNotificationGroup(SCANNER_WORKER);
 
     @Override
     public void actionPerformed(AnActionEvent event) {
         Project project = event.getProject();
         if (project == null) {
             log.warn("No project found in context.");
-            Messages.showErrorDialog("No project found in context.", "Scanner Worker");
+            Messages.showErrorDialog("No project found in context.", SCANNER_WORKER);
             return;
         }
 
-        log.info("Starting Java file scan for project: " + project.getName());
+        ProgressManager.getInstance().run(new Task.Backgroundable(project, "Scanning Java Files", true) {
+        @Override
+        public void run(@NotNull ProgressIndicator indicator) {
+                performScan(project, indicator);
+                }
+            });
+        }
+
+    private void performScan(Project project, ProgressIndicator indicator) {
+        log.info("Starting Java file scan for project: %s => %s".formatted(project.getName(), indicator.getFraction()));
 
         try {
             ProjectStructure structure = new ProjectStructure(project);
             List<PsiJavaFile> javaFiles = structure.getAllJavaPsiFiles();
 
-            log.info("Found " + javaFiles.size() + " Java files in project " + project.getName());
-
+            String info = "Found %s Java files in project %s".formatted(javaFiles.size(), project.getName());
+            log.info(info);
             // Show a notification to the user
-            showNotification(project, "Found " + javaFiles.size() + " Java files", NotificationType.INFORMATION);
+            showNotification(project, info, NotificationType.INFORMATION);
 
             int totalClasses = 0;
             int totalMethods = 0;
 
             for (PsiJavaFile file : javaFiles) {
                 if (file.getVirtualFile() != null) {
-                    log.info("File: " + file.getVirtualFile().getPath());
+                    log.info("File: %s".formatted(file.getVirtualFile().getPath()));
                 } else {
-                    log.info("File: " + file.getName() + " (no virtual file)");
+                    log.info("File: %s (no virtual file)".formatted(file.getName()));
                 }
 
                 PsiClass[] classes = file.getClasses();
@@ -77,7 +93,12 @@ public class ScanProjectAction extends AnAction {
                         String className = psiClass.getName();
                         String qualifiedName = psiClass.getQualifiedName();
 
-                        log.info("  Class: " + className + " (Qualified Name: " + qualifiedName + ")");
+                        if (className == null) {
+                            log.warn("Found class with null name, skipping");
+                            continue;
+                        }
+
+                        log.info("  Class: %s (Qualified Name: %s)".formatted(className, qualifiedName));
 
                         PsiMethod[] methods = psiClass.getMethods();
                         if (methods.length == 0) {
@@ -88,7 +109,7 @@ public class ScanProjectAction extends AnAction {
                             for (PsiMethod method : methods) {
                                 String methodName = method.getName();
                                 String parameters = method.getParameterList().getText();
-                                log.info("    Method: " + methodName + parameters);
+                                log.info("    Method: %s %s".formatted(methodName, parameters));
                             }
                         }
                     }
@@ -113,7 +134,7 @@ public class ScanProjectAction extends AnAction {
 
     private void showNotification(Project project, String message, NotificationType type) {
         Notification notification = NOTIFICATION_GROUP.createNotification(
-                "Scanner Worker",
+                SCANNER_WORKER,
                 message,
                 type
         );

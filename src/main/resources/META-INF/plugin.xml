@@ -32,6 +32,6 @@
     
     <!-- Extensions -->
     <extensions defaultExtensionNs="com.intellij">
-        <!-- Optional: Add a service if you need to maintain state -->
+        <notificationGroup id="Scanner Worker" displayType="BALLOON"/>
     </extensions>
 </idea-plugin>
