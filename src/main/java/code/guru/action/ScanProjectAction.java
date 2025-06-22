@@ -68,6 +68,10 @@ public class ScanProjectAction extends AnAction {
             ProjectStructure structure = new ProjectStructure(project);
             List<PsiJavaFile> javaFiles = structure.getAllJavaPsiFiles();
 
+            // Indicator
+            indicator.setIndeterminate(false);
+            indicator.setFraction(0.0);
+
             String info = "Found %s Java files in project %s".formatted(javaFiles.size(), project.getName());
             log.info(info);
             // Show a notification to the user
@@ -76,7 +80,13 @@ public class ScanProjectAction extends AnAction {
             int totalClasses = 0;
             int totalMethods = 0;
 
-            for (PsiJavaFile file : javaFiles) {
+            for (int i = 0; i < javaFiles.size(); i++) {
+                PsiJavaFile file = javaFiles.get(i);
+
+                double progress = (double) i / javaFiles.size();
+                indicator.setFraction(progress);
+                indicator.setFraction(progress);
+
                 if (file.getVirtualFile() != null) {
                     log.info("File: %s".formatted(file.getVirtualFile().getPath()));
                 } else {
@@ -114,11 +124,15 @@ public class ScanProjectAction extends AnAction {
                         }
                     }
                 }
+                log.info("Progress: %s".formatted(indicator.getFraction()));
             }
 
+            indicator.setFraction(1.0);
+            indicator.setText("Scan completed");
+
             // Show summary
-            String summary = String.format("Scan complete: %d files, %d classes, %d methods",
-                    javaFiles.size(), totalClasses, totalMethods);
+            String summary = String.format("%s %s: %d files, %d classes, %d methods",
+                    indicator.getText(), indicator.getFraction(), javaFiles.size(), totalClasses, totalMethods);
             log.info(summary);
             showNotification(project, summary, NotificationType.INFORMATION);
 
