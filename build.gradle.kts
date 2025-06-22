@@ -6,19 +6,25 @@ plugins {
 group = "code.guru"
 version = "1.0-SNAPSHOT"
 
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(17))
+    }
+}
+
 repositories {
     mavenCentral()
 }
 
 dependencies {
-    implementation("com.jetbrains.intellij.java:java-psi-api:1.0")
     testImplementation(platform("org.junit:junit-bom:5.10.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
 }
 
 intellij {
     version.set("2023.1")
-    type.set("IC") // 'IU' for Ultimate Edition
+    type.set("IC") // 'IC' = IntelliJ Community Edition
+    plugins.set(listOf("java")) // Enable Java support
 }
 
 tasks.withType<JavaCompile> {
