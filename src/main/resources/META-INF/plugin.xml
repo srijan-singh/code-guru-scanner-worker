@@ -1,0 +1,37 @@
+<idea-plugin>
+    <id>code.guru.plugin</id>
+    <name>Scanner Worker</name>
+    <version>1.0</version>
+    <vendor>code.guru</vendor>
+
+    <!-- Specify the minimum and maximum IntelliJ versions -->
+    <idea-version since-build="231.0" until-build="241.*"/>
+
+    <!-- Dependencies -->
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+
+    <description>
+        A simple IntelliJ plugin to scan Java files in a project and extract PSI information.
+        This plugin provides an action to scan all Java files and display information about
+        classes and methods found in the project.
+    </description>
+
+    <!-- Actions -->
+    <actions>
+        <action id="code.guru.scan"
+                class="code.guru.action.ScanProjectAction"
+                text="Scan Java Files"
+                description="Scans all Java files in the current project and shows PSI information">
+            <!-- Add to Tools menu -->
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <!-- Also add to main menu for easier access during development -->
+            <add-to-group group-id="MainMenu" anchor="last"/>
+        </action>
+    </actions>
+    
+    <!-- Extensions -->
+    <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="Scanner Worker" displayType="BALLOON"/>
+    </extensions>
+</idea-plugin>
