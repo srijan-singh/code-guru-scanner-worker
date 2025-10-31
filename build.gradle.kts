@@ -17,8 +17,17 @@ repositories {
 }
 
 dependencies {
+    // Lombok
+    compileOnly("org.projectlombok:lombok:1.18.38")
+    annotationProcessor("org.projectlombok:lombok:1.18.38")
+    // Jackson for JSON processing
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.15.2")
+    // JUnit
     testImplementation(platform("org.junit:junit-bom:5.10.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
+    // Mockito for mocking
+    testImplementation("org.mockito:mockito-core:5.7.0")
+    testImplementation("org.mockito:mockito-junit-jupiter:5.7.0")
 }
 
 intellij {

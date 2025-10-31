@@ -14,6 +14,9 @@
  */
 package code.guru.action;
 
+import code.guru.chunks.ChunkData;
+import code.guru.ipc.JsonStorageImplementation;
+import code.guru.ipc.IngestionIPC;
 import code.guru.structure.ProjectStructure;
 import com.intellij.notification.Notification;
 import com.intellij.notification.NotificationGroup;
@@ -21,18 +24,33 @@ import com.intellij.notification.NotificationGroupManager;
 import com.intellij.notification.NotificationType;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.util.Computable;
+import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.PsiJavaFile;
+import com.intellij.psi.JavaRecursiveElementVisitor;
 import com.intellij.psi.PsiClass;
+import com.intellij.psi.PsiElement;
+import com.intellij.psi.PsiField;
 import com.intellij.psi.PsiMethod;
+import com.intellij.psi.PsiMethodCallExpression;
+import com.intellij.psi.PsiReferenceExpression;
+
 import org.jetbrains.annotations.NotNull;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 public class ScanProjectAction extends AnAction {
 
@@ -44,6 +62,8 @@ public class ScanProjectAction extends AnAction {
     private static final NotificationGroup NOTIFICATION_GROUP =
             NotificationGroupManager.getInstance().getNotificationGroup(SCANNER_WORKER);
 
+    private IngestionIPC ingestionIPC;
+
     @Override
     public void actionPerformed(AnActionEvent event) {
         Project project = event.getProject();
@@ -53,96 +73,203 @@ public class ScanProjectAction extends AnAction {
             return;
         }
 
+        ingestionIPC = new JsonStorageImplementation(project);
         ProgressManager.getInstance().run(new Task.Backgroundable(project, "Scanning Java Files", true) {
         @Override
         public void run(@NotNull ProgressIndicator indicator) {
-                performScan(project, indicator);
+                performChunkScanning(project, indicator);
                 }
             });
         }
-
-    private void performScan(Project project, ProgressIndicator indicator) {
-        log.info("Starting Java file scan for project: %s => %s".formatted(project.getName(), indicator.getFraction()));
+    private void performChunkScanning(Project project, ProgressIndicator indicator) {
+        List<ChunkData> chunks = new ArrayList<>();
 
         try {
-            ProjectStructure structure = new ProjectStructure(project);
-            List<PsiJavaFile> javaFiles = structure.getAllJavaPsiFiles();
-
-            // Indicator
-            indicator.setIndeterminate(false);
-            indicator.setFraction(0.0);
+            AtomicInteger totalClasses = new AtomicInteger();
+            AtomicInteger totalMethods = new AtomicInteger();
+            List<PsiJavaFile> javaFiles = ApplicationManager.getApplication().runReadAction(
+                (Computable<List<PsiJavaFile>>) () -> {
+                    ProjectStructure structure = new ProjectStructure(project);
+                    return structure.getAllJavaPsiFiles();
+                }
+            );
 
             String info = "Found %s Java files in project %s".formatted(javaFiles.size(), project.getName());
             log.info(info);
-            // Show a notification to the user
             showNotification(project, info, NotificationType.INFORMATION);
 
-            int totalClasses = 0;
-            int totalMethods = 0;
+            indicator.setIndeterminate(false);
+            indicator.setFraction(0.0);
 
-            for (int i = 0; i < javaFiles.size(); i++) {
-                PsiJavaFile file = javaFiles.get(i);
+            // Map to store method signature -> list of callers
+            Map<String, List<String>> calledByMap = new HashMap<>();
+            
+            // PASS 1: Build dependency graph and collect chunks
+            ApplicationManager.getApplication().runReadAction(() -> {
+                for (int i = 0; i < javaFiles.size(); i++) {
+                    if (indicator.isCanceled()) break;
 
-                double progress = (double) i / javaFiles.size();
-                indicator.setFraction(progress);
-                indicator.setFraction(progress);
+                    PsiJavaFile file = javaFiles.get(i);
+                    double progress = (double) i / javaFiles.size() * 0.5; // First pass is 50%
+                    indicator.setFraction(progress);
+                    indicator.setText("Pass 1/2: Analyzing dependencies (" + (i+1) + "/" + javaFiles.size() + ")");
 
-                if (file.getVirtualFile() != null) {
-                    log.info("File: %s".formatted(file.getVirtualFile().getPath()));
-                } else {
-                    log.info("File: %s (no virtual file)".formatted(file.getName()));
-                }
+                    VirtualFile vf = file.getVirtualFile();
+                    log.info("File: %s".formatted(vf != null ? vf.getPath() : file.getName() + " (no virtual file)"));
 
-                PsiClass[] classes = file.getClasses();
-                if (classes.length == 0) {
-                    log.info("  No classes found in this file.");
-                } else {
-                    totalClasses += classes.length;
+                    PsiClass[] classes = file.getClasses();
+                    if (classes.length == 0) {
+                        log.info("  No classes found in this file.");
+                    } else {
+                        totalClasses.addAndGet(classes.length);
 
-                    for (PsiClass psiClass : classes) {
-                        String className = psiClass.getName();
-                        String qualifiedName = psiClass.getQualifiedName();
+                        for (PsiClass psiClass : classes) {
+                            String className = psiClass.getQualifiedName();
+                            if (className == null) {
+                                log.warn("Found class with null name, skipping");
+                                continue;
+                            }
 
-                        if (className == null) {
-                            log.warn("Found class with null name, skipping");
-                            continue;
-                        }
+                            List<String> classAttributes = Arrays.stream(psiClass.getFields())
+                                    .map(field -> field.getName() + ":" + field.getType().getPresentableText())
+                                    .toList();
 
-                        log.info("  Class: %s (Qualified Name: %s)".formatted(className, qualifiedName));
+                            log.info("  Class Qualified Name: %s".formatted(className));
 
-                        PsiMethod[] methods = psiClass.getMethods();
-                        if (methods.length == 0) {
-                            log.info("    No methods found.");
-                        } else {
-                            totalMethods += methods.length;
+                            PsiMethod[] methods = psiClass.getMethods();
+                            if (methods.length == 0) {
+                                log.info("    No methods found.");
+                            } else {
+                                totalMethods.addAndGet(methods.length);
 
-                            for (PsiMethod method : methods) {
-                                String methodName = method.getName();
-                                String parameters = method.getParameterList().getText();
-                                log.info("    Method: %s %s".formatted(methodName, parameters));
+                                for (PsiMethod method : methods) {
+                                    if (indicator.isCanceled()) break;
+
+                                    String methodName = method.getName();
+                                    String returnType = method.getReturnType() != null
+                                            ? method.getReturnType().getPresentableText()
+                                            : "void";
+                                    List<String> parameters = Arrays.stream(method.getParameterList().getParameters())
+                                            .map(p -> p.getType().getPresentableText() + " " + p.getName())
+                                            .collect(Collectors.toList());
+
+                                    // Create unique method signature for this method
+                                    String currentMethodSignature = className + "." + methodName;
+
+                                    List<String> dependencies = new ArrayList<>();
+
+                                    method.accept(new JavaRecursiveElementVisitor() {
+                                        @Override
+                                        public void visitMethodCallExpression(PsiMethodCallExpression expression) {
+                                            PsiMethod resolvedMethod = expression.resolveMethod();
+                                            if (resolvedMethod != null) {
+                                                PsiClass containingClass = resolvedMethod.getContainingClass();
+                                                if (containingClass != null) {
+                                                    String fqMethod = containingClass.getQualifiedName() + "." + resolvedMethod.getName();
+                                                    dependencies.add(fqMethod);
+                                                    
+                                                    // Build reverse mapping: the called method is called by current method
+                                                    calledByMap.computeIfAbsent(fqMethod, k -> new ArrayList<>())
+                                                            .add(currentMethodSignature);
+                                                }
+                                            }
+                                            super.visitMethodCallExpression(expression);
+                                        }
+
+                                        @Override
+                                        public void visitReferenceExpression(PsiReferenceExpression expression) {
+                                            PsiElement resolved = expression.resolve();
+                                            if (resolved instanceof PsiField field) {
+                                                PsiClass containingClass = field.getContainingClass();
+                                                if (containingClass != null) {
+                                                    String fqField = containingClass.getQualifiedName() + "." + field.getName();
+                                                    dependencies.add(fqField);
+                                                }
+                                            }
+                                            super.visitReferenceExpression(expression);
+                                        }
+                                    });
+
+                                    String methodCode = method.getText();
+
+                                    // Create chunk with empty calledBy for now
+                                    ChunkData chunk = ChunkData.builder()
+                                            .className(className)
+                                            .methodName(methodName)
+                                            .returnType(returnType)
+                                            .parameters(parameters)
+                                            .classAttributes(classAttributes)
+                                            .calledBy(new ArrayList<>()) // Will populate in pass 2
+                                            .dependencies(dependencies)
+                                            .methodCode(methodCode)
+                                            .build();
+
+                                    chunks.add(chunk);
+                                    
+                                    if (chunks.size() % 100 == 0) {
+                                        log.info("Collected " + chunks.size() + " chunks so far");
+                                    }
+                                }
                             }
                         }
                     }
                 }
-                log.info("Progress: %s".formatted(indicator.getFraction()));
+            });
+
+            if (indicator.isCanceled()) {
+                log.info("Scan cancelled by user");
+                return;
+            }
+
+            // PASS 2: Populate calledBy information
+            indicator.setText("Pass 2/2: Building caller relationships");
+            for (int i = 0; i < chunks.size(); i++) {
+                if (indicator.isCanceled()) break;
+                
+                double progress = 0.5 + (double) i / chunks.size() * 0.5; // Second pass is remaining 50%
+                indicator.setFraction(progress);
+                
+                ChunkData chunk = chunks.get(i);
+                String methodSignature = chunk.getClassName() + "." + chunk.getMethodName();
+                
+                // Get callers from the map
+                List<String> callers = calledByMap.getOrDefault(methodSignature, new ArrayList<>());
+                
+                // Update the chunk with calledBy information
+                // Note: You'll need to modify ChunkData to allow updating calledBy
+                // or rebuild the chunk with the new information
+                chunk.getCalledBy().addAll(callers);
+                
+                if ((i + 1) % 100 == 0) {
+                    log.info("Processed calledBy for " + (i + 1) + "/" + chunks.size() + " chunks");
+                }
             }
 
             indicator.setFraction(1.0);
             indicator.setText("Scan completed");
 
-            // Show summary
-            String summary = String.format("%s %s: %d files, %d classes, %d methods",
-                    indicator.getText(), indicator.getFraction(), javaFiles.size(), totalClasses, totalMethods);
+            // Log some statistics
+            long chunksWithCallers = chunks.stream()
+                    .filter(chunk -> !chunk.getCalledBy().isEmpty())
+                    .count();
+            log.info("Methods with callers: " + chunksWithCallers + " out of " + chunks.size());
+
+            String chunkIngestionResult = ingestionIPC.sendChunks(chunks);
+
+            String summary = String.format("Java Files: %s, Classes: %s, Methods: %s, Methods with callers: %s",
+                    javaFiles.size(), totalClasses.get(), totalMethods.get(), chunksWithCallers);
             log.info(summary);
             showNotification(project, summary, NotificationType.INFORMATION);
 
-            // Also show a dialog with the summary
-            Messages.showInfoMessage(project, summary, "Scanner Worker - Scan Results");
+            ApplicationManager.getApplication().invokeLater(() ->
+                    Messages.showInfoMessage(project, summary, chunkIngestionResult));
 
         } catch (Exception e) {
             log.error("Error during Java file scanning", e);
-            showNotification(project, "Error during scanning: " + e.getMessage(), NotificationType.ERROR);
-            Messages.showErrorDialog(project, "Error during scanning: " + e.getMessage(), "Scanner Worker");
+            ApplicationManager.getApplication().invokeLater(() -> {
+                showNotification(project, "Error during scanning: " + e.getMessage(), NotificationType.ERROR);
+                Messages.showErrorDialog(project, "Error during scanning: " + e.getMessage(), "Scanner Worker");
+            });
         }
     }
 
