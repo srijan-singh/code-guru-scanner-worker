@@ -13,8 +13,8 @@
 
     <description>
         A simple IntelliJ plugin to scan Java files in a project and extract PSI information.
-        This plugin provides an action to scan all Java files and display information about
-        classes and methods found in the project.
+        This plugin provides an action to scan all Java files, display information about
+        classes and methods found in the project, and store the data in JSON files organized by module.
     </description>
 
     <!-- Actions -->
@@ -33,5 +33,6 @@
     <!-- Extensions -->
     <extensions defaultExtensionNs="com.intellij">
         <notificationGroup id="Scanner Worker" displayType="BALLOON"/>
+        <projectService serviceImplementation="code.guru.ipc.JsonStorageConfig"/>
     </extensions>
 </idea-plugin>
